@@ -30,13 +30,20 @@ const GOOGLE_ENDPOINT='https://script.google.com/macros/s/AKfycbyWPV-SXSt_Ez3sZp
 const RATINGS={useful:'Полезно',useless:'Бесполезно',situational:'Ситуативно',dont_know:'Не помню'};
 const INTEREST_RATINGS={interesting:'Интересный',boring:'Скучный'};
 const CLASS_METRICS=[['fun','Интересность игры'],['comfort','Удобство управления'],['variety','Разнообразие умений'],['pve','Полезность в PvE'],['pvp','Полезность в PvP'],['overall','Общее впечатление']];
-const DUNGEON_METRICS=[['visual','Атмосфера и визуал'],['bosses','Боссы'],['mechanics','Механики'],['overall','Общее впечатление']];
+const DUNGEON_METRICS=[['visual','Атмосфера и визуал'],['boss_mechanics','Боссы и механики'],['overall','Общее впечатление']];
 const DUNGEON_LEVELS=[20,28,33,38,43,49,58,63,70,85,99,105];
 const $=id=>document.getElementById(id);
 function randomId(){if(typeof crypto!=='undefined'&&crypto.randomUUID)return crypto.randomUUID();return 'anon-'+Date.now()+'-'+Math.random().toString(36).slice(2)}
 let state={response_id:randomId(),nickname:'',experience:'',ratings:{},interestRatings:{},ideaBadRatings:{},classRatings:{},dungeonRatings:{},dungeon_index:0,notes:{},class_index:0,last_sent_signature:null,last_sent_backend:null};
 try{const cached=JSON.parse(localStorage.getItem(STORE_KEY)||'null');if(cached&&typeof cached==='object'&&cached.ratings){state={...state,...cached,interestRatings:cached.interestRatings||{},ideaBadRatings:cached.ideaBadRatings||{},classRatings:cached.classRatings||{},dungeonRatings:cached.dungeonRatings||{},notes:cached.notes||{}}}}catch(e){}
 state.class_index=Math.max(0,Math.min(CLASSES.length-1,Number(state.class_index)||0));
+// Сохраняем уже выставленные оценки старого опроса при объединении категорий.
+for(const entry of Object.values(state.dungeonRatings||{})){
+  if(!entry||typeof entry!=='object'||entry.boss_mechanics!=null)continue;
+  const legacy=[entry.bosses,entry.mechanics].filter(x=>x!==''&&x!=null&&Number(x)>=1&&Number(x)<=10).map(Number);
+  if(legacy.length)entry.boss_mechanics=Math.round(legacy.reduce((a,b)=>a+b,0)/legacy.length);
+  delete entry.bosses;delete entry.mechanics;
+}
 function persist(){try{localStorage.setItem(STORE_KEY,JSON.stringify(state))}catch(e){}}
 let sending=false;
 function currentSignature(){return JSON.stringify({nickname:state.nickname.trim(),experience:state.experience,ratings:state.ratings,interestRatings:state.interestRatings,ideaBadRatings:state.ideaBadRatings,classRatings:state.classRatings,dungeonRatings:state.dungeonRatings,notes:state.notes})}
@@ -111,7 +118,7 @@ $('skills').addEventListener('click',e=>{const rateBtn=e.target.closest('[data-r
  if(e.target.classList.contains('noteToggle')){const ta=card.querySelector('textarea');ta.hidden=!ta.hidden;e.target.setAttribute('aria-expanded',String(!ta.hidden));if(!ta.hidden)ta.focus()}
 });
 $('skills').addEventListener('input',e=>{if(!e.target.matches('textarea'))return;const id=e.target.closest('[data-id]').dataset.id;state.notes[id]=e.target.value;persist();refreshSendButton();e.target.previousElementSibling.textContent=e.target.value?'Комментарий ✓':'Добавить комментарий'});
-function payload(){const st=stats();return {format:'fragoria-ability-survey-v1',schema_version:4,project:'Лукомория',source:'ABILITY_USEFULNESS_SURVEY_SKILL_LIST.md',response_id:state.response_id,respondent:state.nickname.trim()||'Аноним',experience:state.experience||'not_specified',exported_at:new Date().toISOString(),questions_total:ALL.length,ratings_summary:st,class_ratings:state.classRatings,dungeon_ratings:state.dungeonRatings,answers:ALL.map(x=>{const rating=state.ratings[x.id]||null;const interest_rating=state.interestRatings[x.id]||null;const idea_bad_execution=Boolean(state.ideaBadRatings[x.id]);return {skill_id:x.id,class_name:x.class_name,skill_name:x.name,skill_type:x.kind,description:x.desc,rating,interest_rating,idea_bad_execution,selected_options:[rating,interest_rating,idea_bad_execution?'idea_bad_execution':null].filter(Boolean),comment:(state.notes[x.id]||'').trim()}})}}
+function payload(){const st=stats();return {format:'fragoria-ability-survey-v1',schema_version:5,project:'Лукомория',source:'ABILITY_USEFULNESS_SURVEY_SKILL_LIST.md',response_id:state.response_id,respondent:state.nickname.trim()||'Аноним',experience:state.experience||'not_specified',exported_at:new Date().toISOString(),questions_total:ALL.length,ratings_summary:st,class_ratings:state.classRatings,dungeon_ratings:state.dungeonRatings,answers:ALL.map(x=>{const rating=state.ratings[x.id]||null;const interest_rating=state.interestRatings[x.id]||null;const idea_bad_execution=Boolean(state.ideaBadRatings[x.id]);return {skill_id:x.id,class_name:x.class_name,skill_name:x.name,skill_type:x.kind,description:x.desc,rating,interest_rating,idea_bad_execution,selected_options:[rating,interest_rating,idea_bad_execution?'idea_bad_execution':null].filter(Boolean),comment:(state.notes[x.id]||'').trim()}})}}
 function file(){const p=payload();const safe=(state.nickname.trim()||'anon').replace(/[^\p{L}\p{N}_-]+/gu,'_').slice(0,32);return new File([JSON.stringify(p,null,2)],`fragoria_${safe}_${state.response_id.slice(0,8)}.json`,{type:'application/json'})}
 function download(blob,name){const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=name;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1500)}
 function message(s){$('message').textContent=s}
@@ -142,7 +149,7 @@ function checkGoogleReceipt_(id,receipt){
 async function confirmGoogleReceipt_(id,receipt){
   for(let attempt=0;attempt<3;attempt++){
     if(attempt)await new Promise(resolve=>setTimeout(resolve,1100*attempt));
-    const status=await checkGoogleReceipt_(id,receipt);if(status.saved&&Number(status.version)>=4)return true;
+    const status=await checkGoogleReceipt_(id,receipt);if(status.saved&&Number(status.version)>=5)return true;
   }
   return false;
 }
@@ -158,7 +165,7 @@ $('send').addEventListener('click',async()=>{
   p.delivery_id=receipt;
   sending=true;refreshSendButton();message('Сохраняем ответы в Google Таблице…');
   try{
-    const capability=await checkGoogleReceipt_('survey-version-check','survey-version-check');if(Number(capability.version)<4)throw new Error('Сначала обнови Google Apps Script до версии 4. Новые оценки пока не отправлены.');
+    const capability=await checkGoogleReceipt_('survey-version-check','survey-version-check');if(Number(capability.version)<5)throw new Error('Сначала обнови Google Apps Script до версии 5. Новые оценки пока не отправлены.');
     // Google Apps Script не разрешает читать ответ на кросс-доменный POST.
     // Отправляем JSON как текст без CORS, а сохранение подтверждаем отдельным JSONP-запросом.
     await fetch(GOOGLE_ENDPOINT,{method:'POST',mode:'no-cors',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify(p),redirect:'follow'});
